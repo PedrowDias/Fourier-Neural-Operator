@@ -1,8 +1,9 @@
 '''Train a model on the Burgers equation dataset.
 
 Usage:
-    python scripts/train.py
-    python scripts/train.py --data data/burgers.npz --epochs 200 --model mlp
+    python scripts/train.py --model mlp
+    python scripts/train.py --model fno
+    python scripts/train.py --model fno --epochs 200 --lr 1e-3
 '''
 import argparse
 import logging
@@ -13,6 +14,7 @@ from torch.utils.data import DataLoader, Subset
 
 from fno.data.dataset import BurgersDataset
 from fno.models.mlp import MLP
+from fno.models.fno1d import FNO1d
 from fno.training.config import TrainingConfig
 from fno.training.trainer import Trainer
 
@@ -25,7 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--epochs',     type=int,   default=100)
     parser.add_argument('--batch-size', type=int,   default=32)
     parser.add_argument('--lr',         type=float, default=1e-3)
-    parser.add_argument('--model',      type=str,   default='mlp', choices=['mlp'])
+    parser.add_argument('--model',      type=str,   default='fno', choices=['mlp', 'fno'])
     parser.add_argument('--seed',       type=int,   default=42)
     return parser.parse_args()
 
@@ -55,7 +57,11 @@ def main() -> None:
 
     # --- Model ---
     n_grid = train_ds[0][0].shape[0]
-    model = MLP(n_grid=n_grid)
+    if args.model == 'mlp':
+        model = MLP(n_grid=n_grid)
+    else:
+        model = FNO1d(n_grid=n_grid)
+
     logging.info(f'Model: {model.__class__.__name__} | Parameters: {model.parameter_count():,}')
 
     # --- Train ---
@@ -64,6 +70,7 @@ def main() -> None:
         batch_size=args.batch_size,
         learning_rate=args.lr,
         seed=args.seed,
+        checkpoint_dir=f'checkpoints/{args.model}',
     )
     trainer = Trainer(model, train_loader, val_loader, config)
     trainer.train()
