@@ -19,3 +19,5 @@ notebooks/.ipynb_checkpoints/
 .pytest_cache/
 .coverage
 htmlcov/
+.DS_Store
+.idea/
