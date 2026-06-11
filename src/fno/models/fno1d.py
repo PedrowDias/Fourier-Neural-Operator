@@ -30,9 +30,6 @@ class SpectralConv1d(nn.Module):
         self.out_channels = out_channels
         self.n_modes      = n_modes
 
-        # Complex weights, stored as real tensor of shape (in, out, n_modes, 2)
-        # where the last dim is [real, imag]. This avoids dtype issues across
-        # PyTorch versions.
         scale = 1.0 / (in_channels * out_channels)
         self.weights = nn.Parameter(
             scale * torch.randn(in_channels, out_channels, n_modes, 2)
@@ -45,17 +42,15 @@ class SpectralConv1d(nn.Module):
         '''Apply spectral convolution.
 
         Args:
-            x: Shape (batch, in_channels, n_grid).
+            x: Shape (batch, in_channels, n_grid). n_grid can be any size.
 
         Returns:
             Shape (batch, out_channels, n_grid).
         '''
         batch, _, n_grid = x.shape
 
-        # FFT along the spatial dimension
-        x_ft = torch.fft.rfft(x, dim=-1)  # (batch, in_channels, n_grid//2 + 1)
+        x_ft = torch.fft.rfft(x, dim=-1)
 
-        # Multiply lowest n_modes by learned weights
         out_ft = torch.zeros(
             batch, self.out_channels, n_grid // 2 + 1,
             dtype=torch.cfloat, device=x.device
@@ -66,19 +61,14 @@ class SpectralConv1d(nn.Module):
             self._complex_weights(),
         )
 
-        # IFFT back to physical space
-        return torch.fft.irfft(out_ft, n=n_grid, dim=-1)  # (batch, out_channels, n_grid)
+        return torch.fft.irfft(out_ft, n=n_grid, dim=-1)
 
 
 class FNOBlock1d(nn.Module):
     '''One FNO layer: spectral conv + linear bypass + activation.
 
-    The bypass (W) is a pointwise linear transform applied in physical space.
-    Adding it to the spectral conv output before the activation mirrors the
-    residual structure in ResNets and stabilises training.
-
     Args:
-        channels: Number of channels (same in and out, enabling residual stacking).
+        channels: Number of channels (same in and out).
         n_modes:  Number of Fourier modes for the spectral convolution.
     '''
 
@@ -88,13 +78,6 @@ class FNOBlock1d(nn.Module):
         self.bypass        = nn.Conv1d(channels, channels, kernel_size=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        '''
-        Args:
-            x: Shape (batch, channels, n_grid).
-
-        Returns:
-            Shape (batch, channels, n_grid).
-        '''
         return F.gelu(self.spectral_conv(x) + self.bypass(x))
 
 
@@ -107,27 +90,26 @@ class FNO1d(Operator):
         3. Output projection: projects (batch, channels, n_grid) → (batch, n_grid)
 
     The spatial coordinate x is appended as an extra input channel before
-    the lifting layer. This gives the network positional information, which
-    improves accuracy on non-translation-invariant problems.
+    the lifting layer. Crucially, this grid is computed dynamically from the
+    actual input size at each forward pass — not stored as a fixed buffer.
+    This is what enables true resolution invariance: the same trained model
+    handles any grid size without modification.
 
     Args:
-        n_grid:   Number of spatial grid points.
-        channels: Width of the hidden representation (lifted space).
+        channels: Width of the hidden representation.
         n_modes:  Number of Fourier modes to keep per layer.
         n_layers: Number of FNO blocks.
     '''
 
     def __init__(
         self,
-        n_grid:   int = 64,
         channels: int = 64,
         n_modes:  int = 16,
         n_layers: int = 4,
     ) -> None:
         super().__init__()
-        self.n_grid = n_grid
 
-        # +1 because we append the spatial coordinate as an extra channel
+        # +1 for the appended spatial coordinate channel
         self.input_projection  = nn.Conv1d(2, channels, kernel_size=1)
         self.fno_blocks        = nn.Sequential(*[FNOBlock1d(channels, n_modes) for _ in range(n_layers)])
         self.output_projection = nn.Sequential(
@@ -136,29 +118,26 @@ class FNO1d(Operator):
             nn.Conv1d(128, 1, kernel_size=1),
         )
 
-        # Fixed spatial grid, registered as a buffer so it moves to the
-        # correct device automatically when model.to(device) is called
-        x = torch.linspace(0, 1, n_grid).reshape(1, 1, n_grid)
-        self.register_buffer('x_grid', x)
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         '''Map a batch of initial conditions to predicted solutions.
 
         Args:
-            x: Shape (batch, n_grid).
+            x: Shape (batch, n_grid). n_grid can be any size at inference.
 
         Returns:
             Shape (batch, n_grid).
         '''
-        batch = x.shape[0]
+        batch, n_grid = x.shape
 
-        # Reshape to (batch, 1, n_grid) and append spatial coordinate
-        x = x.unsqueeze(1)
-        grid = self.x_grid.expand(batch, -1, -1)   # (batch, 1, n_grid)
-        x = torch.cat([x, grid], dim=1)             # (batch, 2, n_grid)
+        # Build spatial grid dynamically from actual input size
+        grid = torch.linspace(0, 1, n_grid, device=x.device).reshape(1, 1, n_grid)
+        grid = grid.expand(batch, -1, -1)          # (batch, 1, n_grid)
 
-        x = self.input_projection(x)                # (batch, channels, n_grid)
-        x = self.fno_blocks(x)                      # (batch, channels, n_grid)
-        x = self.output_projection(x)               # (batch, 1, n_grid)
+        x = x.unsqueeze(1)                         # (batch, 1, n_grid)
+        x = torch.cat([x, grid], dim=1)            # (batch, 2, n_grid)
 
-        return x.squeeze(1)                         # (batch, n_grid)
+        x = self.input_projection(x)               # (batch, channels, n_grid)
+        x = self.fno_blocks(x)                     # (batch, channels, n_grid)
+        x = self.output_projection(x)              # (batch, 1, n_grid)
+
+        return x.squeeze(1)                        # (batch, n_grid)
