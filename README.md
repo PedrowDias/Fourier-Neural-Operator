@@ -1,6 +1,11 @@
-# Fourier Neural Operator for the 1D Burgers Equation
+# Fourier Neural Operator
 
-A from-scratch PyTorch implementation of the **Fourier Neural Operator (FNO)** applied to the viscous 1D Burgers equation. The FNO learns the solution operator of a parametric PDE — mapping initial conditions to solutions — and generalizes to unseen spatial resolutions without retraining.
+A from-scratch PyTorch implementation of the **Fourier Neural Operator (FNO)** applied to two benchmark PDEs:
+
+- **1D Burgers equation** — viscous shock formation, resolution-invariance benchmark
+- **2D Navier-Stokes equation** — incompressible turbulent flow, pseudo-spectral solver
+
+The FNO learns the solution operator of a parametric PDE — mapping initial conditions to solutions — and generalizes to unseen spatial resolutions without retraining.
 
 Based on [Li et al. (2020), *Fourier Neural Operator for Parametric Partial Differential Equations*](https://arxiv.org/abs/2010.08895).
 
@@ -8,7 +13,9 @@ Based on [Li et al. (2020), *Fourier Neural Operator for Parametric Partial Diff
 
 ## Results
 
-### Accuracy
+### 1D Burgers equation
+
+**Accuracy**
 
 | Model | Val relative L2 error |
 |---|---|
@@ -16,31 +23,48 @@ Based on [Li et al. (2020), *Fourier Neural Operator for Parametric Partial Diff
 | FNO (single resolution) | ~0.29 |
 | **FNO (mixed-resolution training)** | **~0.13** |
 
-The FNO achieves **~6× lower error** than the MLP baseline. The MLP overfits — its training loss reaches near zero while validation loss stays flat — because it has no inductive bias about the spatial structure of the problem.
+The FNO achieves **~6× lower error** than the MLP baseline. The MLP overfits — training loss reaches near zero while validation loss stays flat — because it has no inductive bias about the spatial structure of the problem.
 
-### Resolution invariance
+**Resolution invariance**
 
-The FNO is trained simultaneously on resolutions 32, 64, and 128. It is then evaluated at resolution 256 **without retraining**.
+The FNO is trained simultaneously on resolutions 32, 64, and 128, then evaluated at resolution 256 without retraining.
 
 | Evaluation resolution | FNO error | MLP error |
 |---|---|---|
 | 32 | 0.59 | N/A (size mismatch) |
 | 64 | 0.19 | 1.12 |
 | 128 | 0.16 | N/A (size mismatch) |
-| 256 | **0.16** | N/A (size mismatch) |
+| **256** | **0.16** | N/A (size mismatch) |
 
-The FNO maintains consistent accuracy at 128 and 256. The MLP cannot run at any resolution other than its training size — a fundamental architectural limitation.
+The FNO maintains consistent accuracy at 128 and 256. The MLP cannot run at any resolution other than its training size.
 
-### Inference speed
+**Inference speed**
 
 | N samples | Classical solver | FNO | Speedup |
 |---|---|---|---|
 | 1 | 9 ms | 5 ms | 1.8× |
 | 10 | 109 ms | 2 ms | 64× |
 | 100 | 1274 ms | 43 ms | 30× |
-| 500 | 6325 ms | 216 ms | **29×** |
+| 500 | 6325 ms | 216 ms | **~30×** |
 
-The FNO achieves a consistent **~30× speedup** over the classical finite-difference solver at batch sizes of 10 and above.
+---
+
+### 2D Navier-Stokes equation
+
+**Accuracy**
+
+| Training samples | Val relative L2 error |
+|---|---|
+| 200 | 0.36 |
+| **1000** | **0.34** |
+
+**Inference speed** (64×64 grid)
+
+| N samples | NS solver | FNO2d | Speedup |
+|---|---|---|---|
+| 1 | 29 ms | 4 ms | 6.5× |
+| 10 | 283 ms | 33 ms | 8.6× |
+| 50 | 1349 ms | 271 ms | **~5×** |
 
 ---
 
@@ -48,7 +72,7 @@ The FNO achieves a consistent **~30× speedup** over the classical finite-differ
 
 ### The problem
 
-Solving a PDE classically (e.g. the Burgers equation via finite differences) requires numerical integration for every new initial condition. For 1000 samples this means 1000 independent solver runs — expensive in any design loop or simulation pipeline.
+Solving a PDE classically requires numerical integration for every new initial condition. For 1000 samples this means 1000 independent solver runs — expensive in any design loop or simulation pipeline.
 
 ### The idea
 
@@ -70,19 +94,27 @@ Because the learned weights are in frequency space and don't depend on grid size
 
 ```
 src/fno/
-├── solvers/        # Classical PDE solvers (finite difference)
+├── solvers/        # Classical PDE solvers
+│   ├── burgers_1d.py          # Finite-difference solver for 1D Burgers
+│   └── navier_stokes_2d.py    # Pseudo-spectral solver for 2D NS
 ├── data/           # Dataset generation, loading, normalisation
-├── models/         # MLP baseline and FNO architecture
+├── models/         # Neural architectures
+│   ├── mlp.py                 # MLP baseline
+│   ├── fno1d.py               # 1D Fourier Neural Operator
+│   └── fno2d.py               # 2D Fourier Neural Operator
 └── training/       # Trainer, metrics, config
 
 scripts/
-├── generate_data.py          # Generate Burgers equation dataset
-├── train.py                  # Train MLP or FNO (single or mixed resolution)
-├── benchmark_resolution.py   # Resolution generalization benchmark
-├── benchmark_speed.py        # Inference speed benchmark
-└── plot_loss.py              # Plot training curves
+├── generate_data.py           # Generate 1D Burgers dataset
+├── generate_data_2d.py        # Generate 2D Navier-Stokes dataset
+├── train.py                   # Train MLP or FNO1d
+├── train_2d.py                # Train FNO2d
+├── benchmark_resolution.py    # Resolution generalization benchmark
+├── benchmark_speed.py         # 1D speed benchmark
+├── benchmark_2d.py            # 2D accuracy and speed benchmark
+└── plot_loss.py               # Plot training curves
 
-tests/                        # Mirrors src/ structure
+tests/                         # Mirrors src/ structure, 61 tests
 ```
 
 ---
@@ -97,24 +129,21 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-**Generate data**
+**1D Burgers**
 
 ```bash
-python scripts/generate_data.py                      # 1000 samples at resolution 64
+python scripts/generate_data.py
+python scripts/train.py --model fno --mixed-resolution
+python scripts/benchmark_resolution.py
+python scripts/benchmark_speed.py
 ```
 
-**Train**
+**2D Navier-Stokes**
 
 ```bash
-python scripts/train.py --model mlp                  # MLP baseline
-python scripts/train.py --model fno --mixed-resolution  # FNO on resolutions 32, 64, 128
-```
-
-**Benchmark**
-
-```bash
-python scripts/benchmark_resolution.py   # Resolution generalization
-python scripts/benchmark_speed.py        # Inference speed vs classical solver
+python scripts/generate_data_2d.py --n-samples 1000 --output data/ns_64_1000.npz
+python scripts/train_2d.py --data data/ns_64_1000.npz
+python scripts/benchmark_2d.py --data data/ns_64_1000.npz
 ```
 
 **Run tests**
@@ -127,13 +156,15 @@ python -m pytest
 
 ## Key implementation details
 
-**Spectral convolution layer** (`src/fno/models/fno1d.py`): The core FNO operation. Applies FFT, multiplies the lowest `n_modes` Fourier coefficients by learned complex weights, then applies inverse FFT. Weights are stored as real tensors of shape `(in_channels, out_channels, n_modes, 2)` and viewed as complex via `torch.view_as_complex`.
+**Spectral convolution** (`src/fno/models/fno1d.py`, `fno2d.py`): The core FNO operation. Applies FFT, multiplies the lowest `n_modes` Fourier coefficients by learned complex weights, then applies inverse FFT. Weights are stored as real tensors and viewed as complex via `torch.view_as_complex`.
 
-**Dynamic spatial grid** (`FNO1d.forward`): The positional grid is computed from the actual input size at each forward pass — not stored as a fixed buffer. This is what enables resolution invariance without any model modification at inference time.
+**Dynamic spatial grid**: The positional grid is computed from the actual input size at each forward pass — not stored as a fixed buffer. This is what enables resolution invariance without any model modification at inference time.
 
-**Unit Gaussian normalisation** (`src/fno/data/transforms.py`): Mixed-resolution training uses per-sample normalisation (zero mean, unit std computed per sample) rather than dataset-level statistics. This is resolution-independent and consistent between training and evaluation.
+**Unit Gaussian normalisation** (`src/fno/data/transforms.py`): Mixed-resolution training uses per-sample normalisation (zero mean, unit std per sample) rather than dataset-level statistics. This is resolution-independent and consistent between training and evaluation.
 
-**Resolution batch sampler** (`scripts/train.py`): Ensures each batch contains samples from one resolution only, since tensors in a batch must share the same shape. Batch order is shuffled across resolutions each epoch.
+**Pseudo-spectral NS solver** (`src/fno/solvers/navier_stokes_2d.py`): Computes spatial derivatives exactly in frequency space. Velocity is recovered from vorticity via the Poisson equation (trivial in Fourier space). Uses adaptive RK4 timesteps with a CFL-based stability condition and 2/3 dealiasing.
+
+**Resolution batch sampler** (`scripts/train.py`): Ensures each batch contains samples from one resolution only, since tensors in a batch must share the same shape.
 
 ---
 
